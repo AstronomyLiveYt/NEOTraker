@@ -42,9 +42,9 @@ class buttons:
         self.resetButton = Button(topframe, text='Reset', command=self.goReset)
         self.resetButton.grid(row=2, column=2)
         self.westButton = Button(topframe, text='W', command=self.goWest)
-        self.westButton.grid(row=2, column=1)
+        self.westButton.grid(row=2, column=3)
         self.eastButton = Button(topframe, text='E', command=self.goEast)
-        self.eastButton.grid(row=2, column=3)
+        self.eastButton.grid(row=2, column=1)
         self.southButton = Button(topframe, text='S', command=self.goSouth)
         self.southButton.grid(row=3, column=2)
         
@@ -53,9 +53,9 @@ class buttons:
         self.entryEast = Entry(topframe)
         self.entryWest = Entry(topframe)
         self.entryNorth.grid(row=0, column = 2)
-        self.entryEast.grid(row=2, column = 4)
+        self.entryEast.grid(row=2, column = 0)
         self.entrySouth.grid(row=4, column = 2)
-        self.entryWest.grid(row=2, column = 0)
+        self.entryWest.grid(row=2, column = 4)
         self.entryNorth.insert(0, 0)
         self.entryEast.insert(0, 0)
         self.entrySouth.insert(0, 0)
@@ -275,8 +275,8 @@ class buttons:
             trackSettings.tracking = False
             
     def rad_to_sexagesimal(self):
-        self.radeg = (180/math.pi)*self.radra
-        self.decdeg = (180/math.pi)*self.raddec
+        self.radeg = math.degrees(self.radra)
+        self.decdeg = math.degrees(self.raddec)
         self.ra_h = math.trunc((self.radeg)/15)
         self.ra_m = math.trunc((((self.radeg)/15) - self.ra_h)*60)
         self.ra_s = (((((self.radeg)/15) - self.ra_h)*60) - self.ra_m)*60
@@ -298,8 +298,8 @@ class buttons:
             target.compute(observer)
             targetra = target.ra
             targetdec = target.dec
-            targetdec = targetdec + (trackSettings.NSoffset/3600*(math.pi/180))
-            targetra = targetra + (trackSettings.EWoffset/3600*(math.pi/180))
+            targetdec = targetdec + math.radians((trackSettings.NSoffset/3600))
+            targetra = targetra + math.radians((trackSettings.EWoffset/3600))
             self.radra = targetra
             self.raddec = targetdec
             self.rad_to_sexagesimal()
@@ -317,20 +317,37 @@ class buttons:
                 self.ser.write(str.encode(':MS#'))
             elif trackSettings.telescopetype == 'ASCOM' and target.alt > 0:
                 if self.firstslew is True:
-                    self.tel.SlewToCoordinates(float((targetra*180/math.pi)/15),float(targetdec))
-                else:
-                    observer.date = (d.datetime() + datetime.timedelta(seconds=1))
+                    observer.date = (d + datetime.timedelta(seconds=1))
+                    target.compute(observer)
                     targetra2 = target.ra
                     targetdec2 = target.dec
-                    targetdec2 = targetdec2 + (trackSettings.NSoffset/3600*(math.pi/180))
-                    targetra2 = targetra2 + (trackSettings.EWoffset/3600*(math.pi/180))
-                    rarate = (targetra2 - targetra)*(180/math.pi)
-                    decrate = (targetdec2 - targetdec)*(180/math.pi)
+                    targetdec2 = targetdec2 + math.radians((trackSettings.NSoffset/3600))
+                    targetra2 = targetra2 + math.radians((trackSettings.EWoffset/3600))
+                    rarate = (math.degrees(targetra2 - targetra))*math.cos(targetdec2)
+                    decrate = math.degrees(targetdec2 - targetdec)
+                    self.tel.MoveAxis(0, rarate)
+                    self.tel.MoveAxis(1, decrate)
+                    targetrahours = float((math.degrees(targetra2)/15))
+                    print('Slewing to RA hours: '+ str("{0:.4f}".format(round(targetrahours,4))) + ' Dec degrees: ' + str(float(math.degrees(targetdec))))
+                    self.tel.SlewToCoordinates(targetrahours,float(math.degrees(targetdec)))
+                else:
+                    observer.date = (d + datetime.timedelta(seconds=1))
+                    target.compute(observer)
+                    targetra2 = target.ra
+                    targetdec2 = target.dec
+                    targetdec2 = targetdec2 + math.radians((trackSettings.NSoffset/3600))
+                    targetra2 = targetra2 + math.radians((trackSettings.EWoffset/3600))
+                    rarate = (math.degrees(targetra2 - targetra))*math.cos(targetdec2)
+                    decrate = math.degrees(targetdec2 - targetdec)
+                    print('RA Rate: ' + str(math.degrees(targetra2 - targetra)*3600*60*60*math.cos(targetdec2)) + ' arcseconds per hour.  Dec Rate: ' + str(math.degrees(targetdec2 - targetdec)*3600*60*60) + ' arcseconds per hour.')
                     self.tel.MoveAxis(0, rarate)
                     self.tel.MoveAxis(1, decrate)
             #print(targetcoord, end='\r')
             self.firstslew = False
-            root.after(10,self.doTracking)      
+            if trackSettings.telescopetype == 'LX200':
+                root.after(10,self.doTracking)      
+            elif trackSettings.telescopetype == 'ASCOM':
+                root.after(1000,self.doTracking)      
     
     def goNorth(self):
         trackSettings.NSoffset = float(self.entryNorth.get())
@@ -341,12 +358,12 @@ class buttons:
         self.entrySouth.insert(0, (-1*trackSettings.NSoffset))
         
     def goWest(self):
-        trackSettings.EWoffset = float(self.entryWest.get())
-        trackSettings.EWoffset += 1
-        self.entryWest.delete(0, END)
-        self.entryWest.insert(0, trackSettings.EWoffset)
+        trackSettings.EWoffset = float(self.entryWest.get())*-1
+        trackSettings.EWoffset -= 1
         self.entryEast.delete(0, END)
-        self.entryEast.insert(0, (-1*trackSettings.EWoffset))
+        self.entryEast.insert(0, trackSettings.EWoffset)
+        self.entryWest.delete(0, END)
+        self.entryWest.insert(0, (-1*trackSettings.EWoffset))
         
     def goSouth(self):
         trackSettings.NSoffset = float(self.entrySouth.get())*-1
@@ -357,12 +374,12 @@ class buttons:
         self.entrySouth.insert(0, (-1*trackSettings.NSoffset))
         
     def goEast(self):
-        trackSettings.EWoffset = float(self.entryEast.get())*-1
-        trackSettings.EWoffset -= 1
-        self.entryWest.delete(0, END)
-        self.entryWest.insert(0, trackSettings.EWoffset)
+        trackSettings.EWoffset = float(self.entryEast.get())
+        trackSettings.EWoffset += 1
         self.entryEast.delete(0, END)
-        self.entryEast.insert(0, (-1*trackSettings.EWoffset))
+        self.entryEast.insert(0, trackSettings.EWoffset)
+        self.entryWest.delete(0, END)
+        self.entryWest.insert(0, (-1*trackSettings.EWoffset))
         
     def goReset(self):
         trackSettings.EWoffset = 0
