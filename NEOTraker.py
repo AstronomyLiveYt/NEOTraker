@@ -5,12 +5,14 @@ import math
 import os
 import sys
 import time
+import threading
 import datetime
 import re
 import json
-import geocoder
 import serial
 import win32com.client
+import pandas as pd
+import requests, json
 from urllib.request import urlopen
 
 class trackSettings:
@@ -23,8 +25,10 @@ class trackSettings:
     telescopetype = 'LX200'
     Lat = 0.0
     Lon = 0.0
-
-
+    JPLTracking = False
+    target = "'414P'"
+    observatory = "-1,1,0"
+    dlast = datetime.datetime.utcnow() - datetime.timedelta(seconds=60)
 class buttons:
     def __init__(self, master):
         topframe = Frame(master)
@@ -79,17 +83,18 @@ class buttons:
             config.close()
         except:
             print('Config file not present or corrupted.')
-        try:
-            geolocation = geocoder.ip('me')
-            self.entryLat.insert(0, geolocation.latlng[0])
-            self.entryLon.insert(0, geolocation.latlng[1])
-        except:
-            self.entryLat.insert(0, trackSettings.Lat)
-            self.entryLon.insert(0, trackSettings.Lon)
+        self.entryLat.insert(0, trackSettings.Lat)
+        self.entryLon.insert(0, trackSettings.Lon)
         self.comLabel = Label(topframe, text='COM Port')
         self.comLabel.grid(row = 2, column = 5)
         self.entryCom = Entry(topframe)
         self.entryCom.grid(row = 2, column = 6)
+        self.targetLabel = Label(topframe, text='HORIZONS Target')
+        self.targetLabel.grid(row = 3, column = 5)
+        self.entryTarget = Entry(topframe)
+        self.entryTarget.grid(row = 3, column = 6)
+        self.targetButton = Button(topframe, text='Set Target', command=self.setTarget)
+        self.targetButton.grid(row=4, column=6)
         try:
             self.entryCom.insert(0, clines[2])
         except:
@@ -105,15 +110,117 @@ class buttons:
         self.typeMenu = Menu(self.menu)
         self.menu.add_cascade(label='File Type', menu=self.typeMenu)
         self.typeMenu.add_command(label='JPL HORIZONS', command=self.setHorizons)
+        self.typeMenu.add_command(label='Real Time JPL HORIZONS', command=self.setRealTimeHorizons)
         self.typeMenu.add_command(label='FindOrb', command=self.setFindOrb)
+        self.typeMenu.add_command(label='FindOrb Ephemeris', command=self.setFindEphem)
         
         self.telescopeMenu = Menu(self.menu)
         self.menu.add_cascade(label='Telescope Type', menu=self.telescopeMenu)
         self.telescopeMenu.add_command(label='LX200 Classic', command=self.setLX200)
         self.telescopeMenu.add_command(label='ASCOM', command=self.setASCOM)
     
+    def jplTrack(self):
+        while trackSettings.JPLTracking is True:
+            trackSettings.observatory = str(str(self.entryLon.get())+','+str(self.entryLat.get())+',0')
+            d = datetime.datetime.utcnow()             
+            year, month, day = str(d.year), str(d.month), str(d.day)
+            hour, minute, seconds = str(d.hour), str(d.minute), str(d.second)
+            d2 = d + datetime.timedelta(seconds=60)
+            year2, month2, day2 = str(d2.year), str(d2.month), str(d2.day)
+            hour2, minute2, seconds2 = str(d2.hour), str(d2.minute), str(d2.second)
+            horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='1%20min'&QUANTITIES='4'")
+            url = requests.get(horizonscommand)
+            text = url.text
+            #print(text)
+            data = json.loads(text)
+            lines = data['result'].splitlines()
+            for i, line in enumerate(lines):
+                if "$$SOE" in line:
+                    line1 = lines[i+1]
+                    line2 = lines[i+2]
+                    coords = line1.split(" ")
+                    alt1 = float(coords[-1])
+                    try:
+                        az1 = float(coords[-2])
+                    except:
+                        try:
+                            az1 = float(coords[-3])
+                        except:
+                            az1 = float(coords[-4])
+                    coords = line2[-23:].split(" ")
+                    alt2 = float(coords[-1])
+                    try:
+                        az2 = float(coords[-2])
+                    except:
+                        try:
+                            az2 = float(coords[-3])
+                        except:
+                            az2 = float(coords[-4])
+                    print(line1)
+                    print(line2)
+                    dnow = datetime.datetime.utcnow()
+                    ddiff = dnow - d
+                    while ddiff.total_seconds() < 60:
+                        dnow = datetime.datetime.utcnow()
+                        ddiff = dnow - d
+                        ddiffsecs = ddiff.total_seconds()
+                        currentalt = (((alt2 - alt1)/60)*ddiffsecs)+alt1+(trackSettings.NSoffset/3600)
+                        currentaz = (((az2 - az1)/60)*ddiffsecs)+az1+(trackSettings.EWoffset/3600)
+                        self.radaz = math.radians(currentaz)
+                        self.radalt = math.radians(currentalt)
+                        self.rad_to_sexagesimal_alt()
+                        targetcoordaz = str(':Sz ' + str(self.az_d)+'*'+str(self.az_m)+':'+str(int(self.az_s))+'#')
+                        targetcoordalt = str(':Sa ' + str(self.alt_d)+'*'+str(self.alt_m)+':'+str(int(self.alt_s))+'#')
+                        self.ser.write(str.encode(targetcoordaz))
+                        self.ser.write(str.encode(targetcoordalt))
+                        self.ser.write(str.encode(':MA#'))
+                        print(ddiffsecs, currentalt, currentaz)
+                        time.sleep(0.1)
+                        #if trackSettings.telescopetype == 'LX200':
+    
+    def setTarget(self):
+        trackSettings.target = str("'"+str(self.entryTarget.get())+"'")  
+        trackSettings.observatory = str(str(self.entryLon.get())+','+str(self.entryLat.get())+',0')
+        d = datetime.datetime.utcnow()             
+        year, month, day = str(d.year), str(d.month), str(d.day)
+        hour, minute, seconds = str(d.hour), str(d.minute), str(d.second)
+        d2 = d + datetime.timedelta(seconds=60)
+        year2, month2, day2 = str(d2.year), str(d2.month), str(d2.day)
+        hour2, minute2, seconds2 = str(d2.hour), str(d2.minute), str(d2.second)
+        horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='1%20min'&QUANTITIES='4'")
+        url = requests.get(horizonscommand)
+        text = url.text
+        data = json.loads(text)
+        lines = data['result'].splitlines()
+        for i, line in enumerate(lines):
+            print(line)
+
     def setTracking(self):            
-        if trackSettings.tracking is False and trackSettings.FileSelected is True:
+        if trackSettings.JPLTracking is False and trackSettings.filetype == 'RealTimeHORIZONS':
+            trackSettings.JPLTracking = True
+            if trackSettings.telescopetype == 'LX200':
+                try:
+                    self.comport = str('COM'+str(self.entryCom.get()))
+                    self.ser = serial.Serial(self.comport, 9600)
+                    self.ser.write(str.encode(':U#'))
+                    self.serialconnected = True
+                except:
+                    print('Failed to connect on ' + self.comport)
+                    trackSettings.tracking = False
+                    return
+            self.JPLTrackthread = threading.Thread(target=self.jplTrack)
+            self.JPLTrackthread.start()
+        elif trackSettings.JPLTracking is True:
+            if trackSettings.telescopetype == 'LX200' and self.serialconnected is True:
+                self.ser.write(str.encode(':Q#'))
+                self.ser.write(str.encode(':U#'))
+                self.ser.close()
+                self.serialconnected = False
+            elif trackSettings.telescopetype == 'ASCOM':
+                self.tel.Connected = False
+            trackSettings.JPLTracking = False
+        
+        elif trackSettings.tracking is False and trackSettings.FileSelected is True:
             trackSettings.tracking = True
             #Connect either by LX200 or ASCOM
             if trackSettings.telescopetype == 'LX200':
@@ -224,7 +331,7 @@ class buttons:
                         xephemdate = str(str(month) + '/' + str(day) + '/' + str(year))
                         linesplit2 = line5[1:14]
                         self.ec = float(linesplit2)
-                        if self.ec<1:
+                        if self.ec<1 and "Perigee" not in line0:
                             linesplit2 = line3[1:14]
                             self.n = float(linesplit2)
                             linesplit2 = line3[25:35]
@@ -238,7 +345,37 @@ class buttons:
                             linesplit2 = line2[1:11]
                             self.ma = float(linesplit2)
                             self.xephem = str(targetname + ',' + 'e' + ',' + str(self.inc) + ',' + str(self.om) + ',' + str(self.w) + ',' + str(self.a) + ',' + str(self.n) + ',' + str(self.ec) + ',' + str(self.ma) + ',' + xephemdate + ',' + '2000' + ',' + 'g  6.5,4.0')
-                        else:
+                        elif self.ec<1 and "Perigee" in line0:
+                            linesplit2 = line3[1:14]
+                            self.n = float(linesplit2)
+                            linesplit2 = line3[25:35]
+                            self.w = float(linesplit2)
+                            linesplit2 = line4[1:14]
+                            linesplit2 = linesplit2.split('km')[0]
+                            self.a = float(linesplit2)*1000
+                            linesplit2 = line4[25:35]
+                            self.om = float(linesplit2)
+                            linesplit2 = line5[25:35]
+                            self.inc = float(linesplit2)
+                            linesplit2 = line2[1:11]
+                            self.ma = float(linesplit2)
+                            self.gravconst = 6.67408*(10**-11)
+                            self.massearth = 5.9722*(10**24)
+                            self.revday = 1440.0/math.sqrt((4*(math.pi**2)*(self.a**3))/(self.gravconst*self.massearth))
+                            self.xephem = str(targetname + ',' + 'E' + ',' + xephemdate +','+ str(self.inc) + ',' + str(self.om) + ',' + str(self.ec) + ',' + str(self.w) + ',' + str(self.ma) + ',' + str(self.revday) + ',' + '0.00001,0')
+                            print(self.xephem)
+                            #Test coordinate calculations
+                            observer = ephem.Observer()
+                            d = datetime.datetime.utcnow()
+                            observer.date = d
+                            target = ephem.readdb(self.xephem)
+                            observer.lat = str(self.entryLat.get())
+                            observer.lon = str(self.entryLon.get())
+                            observer.elevation = 0
+                            observer.pressure = 1013
+                            target.compute(observer)
+                            print(target.ra, target.dec, target.alt, target.az)
+                        elif self.ec>1 and "Perigee" not in line0:
                             self.tp = line0.split('JD')[1].split(')')[0]
                             self.dateline = float(self.tp) - 2415020
                             observer.date = self.dateline
@@ -262,9 +399,16 @@ class buttons:
                             self.qr = float(linesplit2)
                             self.xephem = str(targetname + ',' + 'h' + ',' + xephemdate + ',' + str(self.inc) + ',' + str(self.om) + ',' + str(self.w) + ',' + str(self.ec) + ',' + str(self.qr) + ',' + '2000' + ',' + 'g  6.5,4.0')
                             print(self.xephem)
+                        else:
+                            print('File not recognized!')
             self.firstslew = True
-            self.doTracking()
-        else:
+            if trackSettings.filetype == 'FindEphem':
+                #blah
+                df = pd.read_csv(trackSettings.orbitFile, sep='  ', encoding="utf-8")
+                print(df)
+            else:
+                self.doTracking()
+        elif trackSettings.tracking is True:
             if trackSettings.telescopetype == 'LX200' and self.serialconnected is True:
                 self.ser.write(str.encode(':Q#'))
                 self.ser.write(str.encode(':U#'))
@@ -273,7 +417,18 @@ class buttons:
             elif trackSettings.telescopetype == 'ASCOM':
                 self.tel.Connected = False
             trackSettings.tracking = False
-            
+
+    def rad_to_sexagesimal_alt(self):
+        self.azdeg = math.degrees(self.radaz)
+        self.altdeg = math.degrees(self.radalt)
+        self.az_d = math.trunc((self.azdeg))
+        self.az_m = math.trunc((((self.azdeg)) - self.az_d)*60)
+        self.az_s = (((((self.azdeg)) - self.az_d)*60) - self.az_m)*60
+        
+        self.alt_d = math.trunc(self.altdeg)
+        self.alt_m = math.trunc((abs(self.altdeg) - abs(self.alt_d))*60)
+        self.alt_s = (((abs(self.altdeg) - abs(self.alt_d))*60) - abs(self.alt_m))*60
+
     def rad_to_sexagesimal(self):
         self.radeg = math.degrees(self.radra)
         self.decdeg = math.degrees(self.raddec)
@@ -396,8 +551,14 @@ class buttons:
     def setHorizons(self):
         trackSettings.filetype = 'HORIZONS'
     
+    def setRealTimeHorizons(self):
+        trackSettings.filetype = 'RealTimeHORIZONS'
+    
     def setFindOrb(self):
         trackSettings.filetype = 'FindOrb'
+
+    def setFindEphem(self):
+        trackSettings.filetype = 'FindEphem'
     
     def setLX200(self):
         trackSettings.telescopetype = 'LX200'
@@ -409,6 +570,139 @@ class buttons:
         trackSettings.orbitFile = filedialog.askopenfilename(initialdir = ".",title = "Select file",filetypes = (("text files","*.txt"),("all files","*.*")))
         trackSettings.FileSelected = True
         print(trackSettings.orbitFile)
+        observer = ephem.Observer()
+        if trackSettings.filetype == 'HORIZONS':
+            with open(trackSettings.orbitFile) as f:
+                lines = [line.rstrip('\n') for line in f]
+            for idx, line in enumerate(lines):
+                if "$$SOE" in line:
+                    #nameline = lines[29].split('(')[1].split(')')[0]
+                    targetname = str('target')
+                    line1 = lines[idx+1]
+                    line2 = lines[idx+2]
+                    line3 = lines[idx+3]
+                    line4 = lines[idx+4]
+                    line5 = lines[idx+5] 
+                    linesplit1 = line1.split(' ')
+                    self.dateline = float(linesplit1[0]) - 2415020
+                    observer.date = self.dateline
+                    datesplit = str(observer.date).split('/')
+                    year = datesplit[0]
+                    month = datesplit[1]
+                    day = float(datesplit[2].split(' ')[0])
+                    fractionday = str('0.'+str(linesplit1[0].split('.')[1]))
+                    fractionday = float(fractionday) - 0.5
+                    if fractionday < 0:
+                        fractionday = 1 + fractionday
+                    day = day + fractionday
+                    xephemdate = str(str(month) + '/' + str(day) + '/' + str(year))
+                    self.ec = float(line2[4:26])
+                    self.qr = float(line2[30:52])
+                    self.inc = float(line2[56:78])
+
+                    self.om = float(line3[4:26])
+                    self.w = float(line3[30:52])
+                    self.tp = float(line3[56:78])
+
+                    self.n = float(line4[4:26])
+                    self.ma = float(line4[30:52])
+                    self.ta = float(line4[56:78])
+
+                    self.a = float(line5[4:26])
+                    self.ad = float(line5[30:52])
+                    self.pr = float(line5[56:78])
+                    if self.ec<1:
+                        self.xephem = str(targetname + ',' + 'e' + ',' + str(self.inc) + ',' + str(self.om) + ',' + str(self.w) + ',' + str(self.a) + ',' + str(self.n) + ',' + str(self.ec) + ',' + str(self.ma) + ',' + xephemdate + ',' + '2000' + ',' + 'g  6.5,4.0')
+                    else:
+                        self.dateline = float(self.tp) - 2415020
+                        observer.date = self.dateline
+                        datesplit = str(observer.date).split('/')
+                        year = datesplit[0]
+                        month = datesplit[1]
+                        day = float(datesplit[2].split(' ')[0])
+                        fractionday = str('0.'+str(linesplit1[0].split('.')[1]))
+                        fractionday = float(fractionday) - 0.5
+                        if fractionday < 0:
+                            fractionday = 1 + fractionday
+                        day = day + fractionday
+                        xephemdate = str(str(month) + '/' + str(day) + '/' + str(year))
+                        self.xephem = str(targetname + ',' + 'h' + ',' + xephemdate + ',' + str(self.inc) + ',' + str(self.om) + ',' + str(self.w) + ',' + str(self.ec) + ',' + str(self.qr) + ',' + '2000' + ',' + 'g  6.5,4.0')
+        elif trackSettings.filetype == 'FindOrb':
+            with open(trackSettings.orbitFile) as f:
+                lines = [line.rstrip('\n') for line in f]
+            for idx, line in enumerate(lines):
+                if "Epoch" in line:
+                    targetname = str('Target')
+                    line0 = lines[idx-2]
+                    line1 = lines[idx]
+                    line2 = lines[idx+2]
+                    line3 = lines[idx+4]
+                    line4 = lines[idx+6]
+                    line5 = lines[idx+8]
+                    linesplit1 = line1.split('JDT ')
+                    linesplit1 = linesplit1[1].split(' ')[0]
+                    self.dateline = float(linesplit1) - 2415020
+                    observer.date = self.dateline
+                    datesplit = str(observer.date).split('/')
+                    year = datesplit[0]
+                    month = datesplit[1]
+                    day = float(datesplit[2].split(' ')[0])
+                    fractionday = str('0.'+str(linesplit1.split('.')[1]))
+                    fractionday = float(fractionday) - 0.5
+                    if fractionday < 0:
+                        fractionday = 1 + fractionday
+                    day = day + fractionday
+                    xephemdate = str(str(month) + '/' + str(day) + '/' + str(year))
+                    linesplit2 = line5[1:14]
+                    self.ec = float(linesplit2)
+                    if self.ec<1 and "Perigee" not in line0:
+                        linesplit2 = line3[1:14]
+                        self.n = float(linesplit2)
+                        linesplit2 = line3[25:35]
+                        self.w = float(linesplit2)
+                        linesplit2 = line4[1:14]
+                        self.a = float(linesplit2)
+                        linesplit2 = line4[25:35]
+                        self.om = float(linesplit2)
+                        linesplit2 = line5[25:35]
+                        self.inc = float(linesplit2)
+                        linesplit2 = line2[1:11]
+                        self.ma = float(linesplit2)
+                        self.xephem = str(targetname + ',' + 'e' + ',' + str(self.inc) + ',' + str(self.om) + ',' + str(self.w) + ',' + str(self.a) + ',' + str(self.n) + ',' + str(self.ec) + ',' + str(self.ma) + ',' + xephemdate + ',' + '2000' + ',' + 'g  6.5,4.0')
+                    elif self.ec<1 and "Perigee" in line0:
+                        linesplit2 = line3[1:14]
+                        self.n = float(linesplit2)
+                        linesplit2 = line3[25:35]
+                        self.w = float(linesplit2)
+                        linesplit2 = line4[1:14]
+                        linesplit2 = linesplit2.split('km')[0]
+                        self.a = float(linesplit2)*1000
+                        linesplit2 = line4[25:35]
+                        self.om = float(linesplit2)
+                        linesplit2 = line5[25:35]
+                        self.inc = float(linesplit2)
+                        linesplit2 = line2[1:11]
+                        self.ma = float(linesplit2)
+                        self.gravconst = 6.67408*(10**-11)
+                        self.massearth = 5.9722*(10**24)
+                        self.revday = 1440.0/math.sqrt((4*(math.pi**2)*(self.a**3))/(self.gravconst*self.massearth))
+                        self.xephem = str(targetname + ',' + 'E' + ',' + xephemdate +','+ str(self.inc) + ',' + str(self.om) + ',' + str(self.ec) + ',' + str(self.w) + ',' + str(self.ma) + ',' + str(self.revday) + ',' + '0.00001,0')
+                        print(self.xephem)
+                        #Test coordinate calculations
+                        observer = ephem.Observer()
+                        d = datetime.datetime.utcnow()
+                        observer.date = d
+                        target = ephem.readdb(self.xephem)
+                        observer.lat = str(self.entryLat.get())
+                        observer.lon = str(self.entryLon.get())
+                        observer.elevation = 0
+                        observer.pressure = 1013
+                        target.compute(observer)
+                        print(target.ra, target.dec, target.alt, target.az)
+        if trackSettings.filetype == 'FindEphem':
+            #blah
+            df = pd.read_csv(trackSettings.orbitFile, sep='  ', encoding="utf-8")
+            print(df)
         
     def exitProg(self):
         config = open('config.txt','w')
