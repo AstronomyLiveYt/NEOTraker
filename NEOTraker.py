@@ -28,6 +28,7 @@ class trackSettings:
     JPLTracking = False
     target = "'414P'"
     observatory = "-1,1,0"
+    mount = 'Alt/Az'
     dlast = datetime.datetime.utcnow() - datetime.timedelta(seconds=60)
 class buttons:
     def __init__(self, master):
@@ -80,6 +81,7 @@ class buttons:
             trackSettings.telescopetype = str(clines[1])
             trackSettings.Lat = float(clines[3])
             trackSettings.Lon = float(clines[4])
+            trackSettings.mounttype = str(clines[5])
             config.close()
         except:
             print('Config file not present or corrupted.')
@@ -116,19 +118,89 @@ class buttons:
         
         self.telescopeMenu = Menu(self.menu)
         self.menu.add_cascade(label='Telescope Type', menu=self.telescopeMenu)
-        self.telescopeMenu.add_command(label='LX200 Classic', command=self.setLX200)
+        self.telescopeMenu.add_command(label='LX200 Classic Alt/Az', command=self.setLX200)
         self.telescopeMenu.add_command(label='ASCOM', command=self.setASCOM)
     
+        self.mountMenu = Menu(self.menu)
+        self.menu.add_cascade(label='Mount Type', menu=self.mountMenu)  
+        self.mountMenu.add_command(label='Alt/Az', command=self.setAltAz)
+        self.mountMenu.add_command(label='Eq', command=self.setEq)
+    
+    def setAltAz(self):
+        trackSettings.mounttype = 'Alt/Az'
+    
+    def setEq(self):
+        trackSettings.mounttype = 'Eq'
+    
     def jplTrack(self):
-        while trackSettings.JPLTracking is True:
+        if trackSettings.telescopetype == 'LX200':
+            while trackSettings.JPLTracking is True:
+                trackSettings.observatory = str(str(self.entryLon.get())+','+str(self.entryLat.get())+',0')
+                d = datetime.datetime.utcnow()             
+                year, month, day = str(d.year), str(d.month), str(d.day)
+                hour, minute, seconds = str(d.hour), str(d.minute), str(d.second)
+                d2 = d + datetime.timedelta(seconds=60)
+                year2, month2, day2 = str(d2.year), str(d2.month), str(d2.day)
+                hour2, minute2, seconds2 = str(d2.hour), str(d2.minute), str(d2.second)
+                horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='1%20min'&QUANTITIES='4'")
+                url = requests.get(horizonscommand)
+                text = url.text
+                #print(text)
+                data = json.loads(text)
+                lines = data['result'].splitlines()
+                for i, line in enumerate(lines):
+                    if "$$SOE" in line:
+                        line1 = lines[i+1]
+                        line2 = lines[i+2]
+                        coords = line1.split(" ")
+                        alt1 = float(coords[-1])
+                        try:
+                            az1 = float(coords[-2])
+                        except:
+                            try:
+                                az1 = float(coords[-3])
+                            except:
+                                az1 = float(coords[-4])
+                        coords = line2[-23:].split(" ")
+                        alt2 = float(coords[-1])
+                        try:
+                            az2 = float(coords[-2])
+                        except:
+                            try:
+                                az2 = float(coords[-3])
+                            except:
+                                az2 = float(coords[-4])
+                        print(line1)
+                        print(line2)
+                        dnow = datetime.datetime.utcnow()
+                        ddiff = dnow - d
+                        while ddiff.total_seconds() < 60 and trackSettings.JPLTracking is True:
+                            dnow = datetime.datetime.utcnow()
+                            ddiff = dnow - d
+                            ddiffsecs = ddiff.total_seconds()
+                            currentalt = (((alt2 - alt1)/60)*ddiffsecs)+alt1+(trackSettings.NSoffset/3600)
+                            currentaz = (((az2 - az1)/60)*ddiffsecs)+az1+(trackSettings.EWoffset/3600)
+                            self.radaz = math.radians(currentaz)
+                            self.radalt = math.radians(currentalt)
+                            self.rad_to_sexagesimal_alt()
+                            targetcoordaz = str(':Sz ' + str(self.az_d)+'*'+str(self.az_m)+':'+str(int(self.az_s))+'#')
+                            targetcoordalt = str(':Sa ' + str(self.alt_d)+'*'+str(self.alt_m)+':'+str(int(self.alt_s))+'#')
+                            self.ser.write(str.encode(targetcoordaz))
+                            self.ser.write(str.encode(targetcoordalt))
+                            self.ser.write(str.encode(':MA#'))
+                            print(ddiffsecs, currentalt, currentaz)
+                            time.sleep(0.1)
+                            #if trackSettings.telescopetype == 'LX200':
+        elif trackSettings.telescopetype == 'ASCOM':
+            #Do the initial slew
             trackSettings.observatory = str(str(self.entryLon.get())+','+str(self.entryLat.get())+',0')
             d = datetime.datetime.utcnow()             
             year, month, day = str(d.year), str(d.month), str(d.day)
             hour, minute, seconds = str(d.hour), str(d.minute), str(d.second)
-            d2 = d + datetime.timedelta(seconds=60)
+            d2 = d + datetime.timedelta(seconds=120)
             year2, month2, day2 = str(d2.year), str(d2.month), str(d2.day)
             hour2, minute2, seconds2 = str(d2.hour), str(d2.minute), str(d2.second)
-            horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='1%20min'&QUANTITIES='4'")
+            horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='2%20min'&QUANTITIES='2'&ANG_FORMAT='DEG'")
             url = requests.get(horizonscommand)
             text = url.text
             #print(text)
@@ -138,45 +210,101 @@ class buttons:
                 if "$$SOE" in line:
                     line1 = lines[i+1]
                     line2 = lines[i+2]
-                    coords = line1.split(" ")
-                    alt1 = float(coords[-1])
+                    #pull coords from t+1 minute to give us time to get in position before starting tracking rates - therefore pull line 2 not line 1
+                    coords = line2.split(" ")
+                    dec = float(coords[-1])
                     try:
-                        az1 = float(coords[-2])
+                        ra = float(coords[-2])
                     except:
                         try:
-                            az1 = float(coords[-3])
+                            ra = float(coords[-3])
                         except:
-                            az1 = float(coords[-4])
-                    coords = line2[-23:].split(" ")
-                    alt2 = float(coords[-1])
-                    try:
-                        az2 = float(coords[-2])
-                    except:
+                            ra = float(coords[-4])
+                    self.tel.SlewToCoordinates((ra/15),dec)
+            dnow = datetime.datetime.utcnow()
+            ddiff = dnow - d
+            while ddiff.total_seconds() < 119 and trackSettings.JPLTracking is True:
+                dnow = datetime.datetime.utcnow()
+                ddiff = dnow - d
+                timetowait = int(120-float(ddiff.total_seconds()))
+                print(timetowait,' seconds until starting object tracking, please wait.')
+            #Now start tracking with moveaxis
+            while trackSettings.JPLTracking is True:
+                trackSettings.observatory = str(str(self.entryLon.get())+','+str(self.entryLat.get())+',0')
+                d = datetime.datetime.utcnow()             
+                year, month, day = str(d.year), str(d.month), str(d.day)
+                hour, minute, seconds = str(d.hour), str(d.minute), str(d.second)
+                d2 = d + datetime.timedelta(seconds=60)
+                year2, month2, day2 = str(d2.year), str(d2.month), str(d2.day)
+                hour2, minute2, seconds2 = str(d2.hour), str(d2.minute), str(d2.second)
+                #This check is ugly, need to refactor how mount type is selected
+                if trackSettings.mounttype == 'Eq':
+                    horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='1%20min'&QUANTITIES='2'&ANG_FORMAT='DEG'")
+                elif trackSettings.mounttype =='Alt/Az':
+                    horizonscommand = str("https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND="+trackSettings.target+"&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='OBSERVER'&CENTER='c@399'&SITE_COORD='"+trackSettings.observatory+"'&START_TIME='"+year+"-"+month+"-"+day+" "+hour+":"+minute+":"+seconds+"'&STOP_TIME='"+year2+"-"+month2+"-"+day2+" "+hour2+":"+minute2+":"+seconds2+"'&STEP_SIZE='1%20min'&QUANTITIES='4'")
+                url = requests.get(horizonscommand)
+                text = url.text
+                #print(text)
+                data = json.loads(text)
+                lines = data['result'].splitlines()
+                for i, line in enumerate(lines):
+                    if "$$SOE" in line:
+                        line1 = lines[i+1]
+                        line2 = lines[i+2]
+                        coords = line1.split(" ")
+                        alt1 = float(coords[-1])
                         try:
-                            az2 = float(coords[-3])
+                            az1 = float(coords[-2])
                         except:
-                            az2 = float(coords[-4])
-                    print(line1)
-                    print(line2)
-                    dnow = datetime.datetime.utcnow()
-                    ddiff = dnow - d
-                    while ddiff.total_seconds() < 60:
+                            try:
+                                az1 = float(coords[-3])
+                            except:
+                                az1 = float(coords[-4])
+                        coords = line2[-23:].split(" ")
+                        alt2 = float(coords[-1])
+                        try:
+                            az2 = float(coords[-2])
+                        except:
+                            try:
+                                az2 = float(coords[-3])
+                            except:
+                                az2 = float(coords[-4])
+                        print(line1)
+                        print(line2)
+                        azrate = (az2 - az1)/60
+                        if trackSettings.mounttype =='Eq':
+                            azrate -= (15.041/3600)
+                        altrate = (alt2 - alt1)/60
+                        if azrate > float(self.axis0rate):
+                            azrate = float(self.axis0rate)
+                        if altrate > float(self.axis1rate):
+                            altrate = float(self.axis1rate)
+                        self.tel.MoveAxis(0, azrate)
+                        self.tel.MoveAxis(1, altrate)
+                        azratelast = azrate
+                        altratelast = altrate
+                        azrateoriginal = azrate
+                        altrateoriginal = altrate
                         dnow = datetime.datetime.utcnow()
                         ddiff = dnow - d
-                        ddiffsecs = ddiff.total_seconds()
-                        currentalt = (((alt2 - alt1)/60)*ddiffsecs)+alt1+(trackSettings.NSoffset/3600)
-                        currentaz = (((az2 - az1)/60)*ddiffsecs)+az1+(trackSettings.EWoffset/3600)
-                        self.radaz = math.radians(currentaz)
-                        self.radalt = math.radians(currentalt)
-                        self.rad_to_sexagesimal_alt()
-                        targetcoordaz = str(':Sz ' + str(self.az_d)+'*'+str(self.az_m)+':'+str(int(self.az_s))+'#')
-                        targetcoordalt = str(':Sa ' + str(self.alt_d)+'*'+str(self.alt_m)+':'+str(int(self.alt_s))+'#')
-                        self.ser.write(str.encode(targetcoordaz))
-                        self.ser.write(str.encode(targetcoordalt))
-                        self.ser.write(str.encode(':MA#'))
-                        print(ddiffsecs, currentalt, currentaz)
-                        time.sleep(0.1)
-                        #if trackSettings.telescopetype == 'LX200':
+                        while ddiff.total_seconds() < 60 and trackSettings.JPLTracking is True:
+                            dnow = datetime.datetime.utcnow()
+                            ddiff = dnow - d
+                            ddiffsecs = ddiff.total_seconds()
+                            azrate = azrateoriginal + (trackSettings.EWoffset/3600)
+                            altrate = altrateoriginal + (trackSettings.NSoffset/3600)
+                            if azrate > float(self.axis0rate):
+                                azrate = float(self.axis0rate)
+                            if altrate > float(self.axis1rate):
+                                altrate = float(self.axis1rate)
+                            if azrate != azratelast:
+                                self.tel.MoveAxis(0,azrate)
+                            if altrate != altratelast:
+                                self.tel.MoveAxis(1,altrate)
+                            azratelast = azrate
+                            altratelast = altrate
+                            print(azrate, altrate)
+                            time.sleep(0.1)
     
     def setTarget(self):
         trackSettings.target = str("'"+str(self.entryTarget.get())+"'")  
@@ -208,6 +336,29 @@ class buttons:
                     print('Failed to connect on ' + self.comport)
                     trackSettings.tracking = False
                     return
+            elif trackSettings.telescopetype == 'ASCOM':
+                self.x = win32com.client.Dispatch("ASCOM.Utilities.Chooser")
+                self.x.DeviceType = 'Telescope'
+                driverName=self.x.Choose("None")
+                self.tel=win32com.client.Dispatch(driverName)
+                if self.tel.Connected:
+                    print("Telescope was already connected")
+                else:
+                    self.tel.Connected = True
+                    if self.tel.Connected:
+                        print("Connected to telescope now")
+                        axis = self.tel.CanMoveAxis(0)
+                        axis2 = self.tel.CanMoveAxis(1)
+                        if axis is False or axis2 is False:
+                            print('This scope cannot use the MoveAxis method, aborting.')
+                            self.tel.Connected = False
+                        else:
+                            self.axis0rate = float(self.tel.AxisRates(0).Item(1).Maximum)
+                            self.axis1rate = float(self.tel.AxisRates(1).Item(1).Maximum)
+                            print(self.axis0rate)
+                            print(self.axis1rate)
+                    else:
+                        print("Unable to connect to telescope, expect exception")
             self.JPLTrackthread = threading.Thread(target=self.jplTrack)
             self.JPLTrackthread.start()
         elif trackSettings.JPLTracking is True:
@@ -217,6 +368,8 @@ class buttons:
                 self.ser.close()
                 self.serialconnected = False
             elif trackSettings.telescopetype == 'ASCOM':
+                self.tel.MoveAxis(0,0)
+                self.tel.MoveAxis(1,0)
                 self.tel.Connected = False
             trackSettings.JPLTracking = False
         
@@ -710,7 +863,8 @@ class buttons:
         config.write(str(trackSettings.telescopetype)+'\n')
         config.write(str(self.entryCom.get()) + '\n')
         config.write(str(self.entryLat.get())+'\n')
-        config.write(str(self.entryLon.get()))
+        config.write(str(self.entryLon.get())+'\n')
+        config.write(str(trackSettings.mounttype))
         config.close()
         exit()
 
