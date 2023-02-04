@@ -180,7 +180,7 @@ class buttons:
                             ddiffsecs = ddiff.total_seconds()
                             currentalt = (((alt2 - alt1)/60)*ddiffsecs)+alt1+(trackSettings.NSoffset/3600)
                             currentaz = (((az2 - az1)/60)*ddiffsecs)+az1+(trackSettings.EWoffset/3600)
-                            self.radaz = math.radians(currentaz)
+                            self.radaz = math.radians(currentaz+180)
                             self.radalt = math.radians(currentalt)
                             self.rad_to_sexagesimal_alt()
                             targetcoordaz = str(':Sz ' + str(self.az_d)+'*'+str(self.az_m)+':'+str(int(self.az_s))+'#')
@@ -210,6 +210,7 @@ class buttons:
                 if "$$SOE" in line:
                     line1 = lines[i+1]
                     line2 = lines[i+2]
+                    print(line2)
                     #pull coords from t+1 minute to give us time to get in position before starting tracking rates - therefore pull line 2 not line 1
                     coords = line2.split(" ")
                     dec = float(coords[-1])
@@ -303,7 +304,12 @@ class buttons:
                                 self.tel.MoveAxis(1,altrate)
                             azratelast = azrate
                             altratelast = altrate
-                            print(azrate, altrate)
+                            if trackSettings.mounttype == 'Alt/Az':
+                                currentaz = self.tel.Azimuth
+                                currentalt = self.tel.Altitude
+                                print(currentaz, currentalt, azrate, altrate)
+                            else:
+                                print(azrate, altrate)
                             time.sleep(0.1)
     
     def setTarget(self):
@@ -606,20 +612,42 @@ class buttons:
             target.compute(observer)
             targetra = target.ra
             targetdec = target.dec
+            targetalt = target.alt + math.radians((trackSettings.NSoffset/3600))
+            targetaz = target.az + math.radians((trackSettings.EWoffset/3600))
             targetdec = targetdec + math.radians((trackSettings.NSoffset/3600))
             targetra = targetra + math.radians((trackSettings.EWoffset/3600))
             self.radra = targetra
             self.raddec = targetdec
             self.rad_to_sexagesimal()
+            self.radaz = (targetaz-math.radians(180))
+            self.radalt =(targetalt)
+            self.rad_to_sexagesimal_alt()
             targetcoord = str(str(self.ra_h)+':'+str(self.ra_m)+':'+"{0:.2f}".format(round(self.ra_s,2))+' '+str(self.dec_d)+':'+str(self.dec_m)+':'+"{0:.2f}".format(round(self.dec_s,2)))   
             if target.alt < 0:
                 print('Object below the horizon, stopping tracking')
                 self.setTracking()
                 time.sleep(1)
-            if trackSettings.telescopetype == 'LX200' and target.alt > 0:
+            if trackSettings.telescopetype == 'LX200' and target.alt > 0 and trackSettings.mounttype =='Alt/Az':
                 targetcoordra = str(':Sr ' + str(self.ra_h)+':'+str(self.ra_m)+':'+str(int(self.ra_s))+'#')
                 targetcoorddec = str(':Sd ' + str(self.dec_d)+'*'+str(self.dec_m)+':'+str(int(self.dec_s))+'#')
-                print(targetcoordra + ' ' + targetcoorddec)
+                #self.ser.write(str.encode(targetcoordra))
+                #self.ser.write(str.encode(targetcoorddec))
+                #self.ser.write(str.encode(':MS#'))
+                targetcoordaz = str(':Sz ' + str(self.az_d)+'*'+str(self.az_m)+':'+str(int(self.az_s))+'#')
+                targetcoordalt = str(':Sa ' + str(self.alt_d)+'*'+str(self.alt_m)+':'+str(int(self.alt_s))+'#')
+                print(targetcoordaz + ' ' + targetcoordalt + ' ' +str(math.degrees(targetalt)) + ' ' +str(math.degrees(targetaz)))
+                self.ser.write(str.encode(targetcoordaz))
+                self.ser.write(str.encode(targetcoordalt))
+                self.ser.write(str.encode(':MA#'))
+            elif trackSettings.telescopetype == 'LX200' and target.alt > 0 and trackSettings.mounttype =='Eq':
+                targetcoordra = str(':Sr ' + str(self.ra_h)+':'+str(self.ra_m)+':'+str(int(self.ra_s))+'#')
+                targetcoorddec = str(':Sd ' + str(self.dec_d)+'*'+str(self.dec_m)+':'+str(int(self.dec_s))+'#')
+                #self.ser.write(str.encode(targetcoordra))
+                #self.ser.write(str.encode(targetcoorddec))
+                #self.ser.write(str.encode(':MS#'))
+                targetcoordaz = str(':Sz ' + str(self.az_d)+'*'+str(self.az_m)+':'+str(int(self.az_s))+'#')
+                targetcoordalt = str(':Sa ' + str(self.alt_d)+'*'+str(self.alt_m)+':'+str(int(self.alt_s))+'#')
+                print(targetcoordra + ' ' + targetcoorddec + ' ' +str(math.degrees(targetalt)) + ' ' +str(math.degrees(targetaz)))
                 self.ser.write(str.encode(targetcoordra))
                 self.ser.write(str.encode(targetcoorddec))
                 self.ser.write(str.encode(':MS#'))
@@ -871,3 +899,4 @@ class buttons:
 root = Tk()
 b = buttons(root)
 root.mainloop()
+
